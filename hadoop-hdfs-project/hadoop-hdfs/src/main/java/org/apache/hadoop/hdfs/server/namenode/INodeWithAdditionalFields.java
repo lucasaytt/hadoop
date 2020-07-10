@@ -33,9 +33,7 @@ import com.google.common.base.Preconditions;
 @InterfaceAudience.Private
 public abstract class INodeWithAdditionalFields extends INode
     implements LinkedElement {
-  // Note: this format is used both in-memory and on-disk.  Changes will be
-  // incompatible.
-  enum PermissionStatusFormat implements LongBitFormat.Enum {
+  enum PermissionStatusFormat {
     MODE(null, 16),
     GROUP(MODE.BITS, 24),
     USER(GROUP.BITS, 24);
@@ -48,14 +46,12 @@ public abstract class INodeWithAdditionalFields extends INode
 
     static String getUser(long permission) {
       final int n = (int)USER.BITS.retrieve(permission);
-      String s = SerialNumberManager.USER.getString(n);
-      assert s != null;
-      return s;
+      return SerialNumberManager.INSTANCE.getUser(n);
     }
 
     static String getGroup(long permission) {
       final int n = (int)GROUP.BITS.retrieve(permission);
-      return SerialNumberManager.GROUP.getString(n);
+      return SerialNumberManager.INSTANCE.getGroup(n);
     }
     
     static short getMode(long permission) {
@@ -65,33 +61,15 @@ public abstract class INodeWithAdditionalFields extends INode
     /** Encode the {@link PermissionStatus} to a long. */
     static long toLong(PermissionStatus ps) {
       long permission = 0L;
-      final int user = SerialNumberManager.USER.getSerialNumber(
+      final int user = SerialNumberManager.INSTANCE.getUserSerialNumber(
           ps.getUserName());
-      assert user != 0;
       permission = USER.BITS.combine(user, permission);
-      // ideally should assert on group but inodes are created with null
-      // group and then updated only when added to a directory.
-      final int group = SerialNumberManager.GROUP.getSerialNumber(
+      final int group = SerialNumberManager.INSTANCE.getGroupSerialNumber(
           ps.getGroupName());
       permission = GROUP.BITS.combine(group, permission);
       final int mode = ps.getPermission().toShort();
       permission = MODE.BITS.combine(mode, permission);
       return permission;
-    }
-
-    static PermissionStatus toPermissionStatus(long id,
-        SerialNumberManager.StringTable stringTable) {
-      int uid = (int)USER.BITS.retrieve(id);
-      int gid = (int)GROUP.BITS.retrieve(id);
-      return new PermissionStatus(
-          SerialNumberManager.USER.getString(uid, stringTable),
-          SerialNumberManager.GROUP.getString(gid, stringTable),
-          new FsPermission(getMode(id)));
-    }
-
-    @Override
-    public int getLength() {
-      return BITS.getLength();
     }
   }
 
@@ -197,7 +175,7 @@ public abstract class INodeWithAdditionalFields extends INode
 
   @Override
   final void setUser(String user) {
-    int n = SerialNumberManager.USER.getSerialNumber(user);
+    int n = SerialNumberManager.INSTANCE.getUserSerialNumber(user);
     updatePermissionStatus(PermissionStatusFormat.USER, n);
   }
 
@@ -211,7 +189,7 @@ public abstract class INodeWithAdditionalFields extends INode
 
   @Override
   final void setGroup(String group) {
-    int n = SerialNumberManager.GROUP.getSerialNumber(group);
+    int n = SerialNumberManager.INSTANCE.getGroupSerialNumber(group);
     updatePermissionStatus(PermissionStatusFormat.GROUP, n);
   }
 

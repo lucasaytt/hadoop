@@ -31,6 +31,10 @@ import org.slf4j.LoggerFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.permission.AclEntry;
+import org.apache.hadoop.fs.permission.AclEntryScope;
+import org.apache.hadoop.fs.permission.AclEntryType;
+import org.apache.hadoop.fs.permission.FsAction;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
@@ -56,8 +60,6 @@ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.XAttrCom
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.XAttrFeatureProto;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeEntryProto;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeFeatureProto;
-import org.apache.hadoop.hdfs.server.namenode.INodeWithAdditionalFields.PermissionStatusFormat;
-import org.apache.hadoop.hdfs.server.namenode.SerialNumberManager.StringTable;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
@@ -72,11 +74,22 @@ import com.google.protobuf.ByteString;
 
 @InterfaceAudience.Private
 public final class FSImageFormatPBINode {
+  private final static long USER_GROUP_STRID_MASK = (1 << 24) - 1;
+  private final static int USER_STRID_OFFSET = 40;
+  private final static int GROUP_STRID_OFFSET = 16;
+
   public static final int ACL_ENTRY_NAME_MASK = (1 << 24) - 1;
   public static final int ACL_ENTRY_NAME_OFFSET = 6;
   public static final int ACL_ENTRY_TYPE_OFFSET = 3;
   public static final int ACL_ENTRY_SCOPE_OFFSET = 5;
   public static final int ACL_ENTRY_PERM_MASK = 7;
+  private static final int ACL_ENTRY_TYPE_MASK = 3;
+  private static final int ACL_ENTRY_SCOPE_MASK = 1;
+  private static final FsAction[] FSACTION_VALUES = FsAction.values();
+  private static final AclEntryScope[] ACL_ENTRY_SCOPE_VALUES = AclEntryScope
+      .values();
+  private static final AclEntryType[] ACL_ENTRY_TYPE_VALUES = AclEntryType
+      .values();
   
   public static final int XATTR_NAMESPACE_MASK = 3;
   public static final int XATTR_NAMESPACE_OFFSET = 30;
@@ -87,36 +100,56 @@ public final class FSImageFormatPBINode {
   public static final int XATTR_NAMESPACE_EXT_OFFSET = 5;
   public static final int XATTR_NAMESPACE_EXT_MASK = 1;
 
+  private static final XAttr.NameSpace[] XATTR_NAMESPACE_VALUES =
+      XAttr.NameSpace.values();
+  
+
   private static final Logger LOG =
       LoggerFactory.getLogger(FSImageFormatPBINode.class);
 
-  // the loader must decode all fields referencing serial number based fields
-  // via to<Item> methods with the string table.
   public final static class Loader {
     public static PermissionStatus loadPermission(long id,
-        final StringTable stringTable) {
-      return PermissionStatusFormat.toPermissionStatus(id, stringTable);
+        final String[] stringTable) {
+      short perm = (short) (id & ((1 << GROUP_STRID_OFFSET) - 1));
+      int gsid = (int) ((id >> GROUP_STRID_OFFSET) & USER_GROUP_STRID_MASK);
+      int usid = (int) ((id >> USER_STRID_OFFSET) & USER_GROUP_STRID_MASK);
+      return new PermissionStatus(stringTable[usid], stringTable[gsid],
+          new FsPermission(perm));
     }
 
     public static ImmutableList<AclEntry> loadAclEntries(
-        AclFeatureProto proto, final StringTable stringTable) {
+        AclFeatureProto proto, final String[] stringTable) {
       ImmutableList.Builder<AclEntry> b = ImmutableList.builder();
       for (int v : proto.getEntriesList()) {
-        b.add(AclEntryStatusFormat.toAclEntry(v, stringTable));
+        int p = v & ACL_ENTRY_PERM_MASK;
+        int t = (v >> ACL_ENTRY_TYPE_OFFSET) & ACL_ENTRY_TYPE_MASK;
+        int s = (v >> ACL_ENTRY_SCOPE_OFFSET) & ACL_ENTRY_SCOPE_MASK;
+        int nid = (v >> ACL_ENTRY_NAME_OFFSET) & ACL_ENTRY_NAME_MASK;
+        String name = stringTable[nid];
+        b.add(new AclEntry.Builder().setName(name)
+            .setPermission(FSACTION_VALUES[p])
+            .setScope(ACL_ENTRY_SCOPE_VALUES[s])
+            .setType(ACL_ENTRY_TYPE_VALUES[t]).build());
       }
       return b.build();
     }
     
     public static List<XAttr> loadXAttrs(
-        XAttrFeatureProto proto, final StringTable stringTable) {
+        XAttrFeatureProto proto, final String[] stringTable) {
       List<XAttr> b = new ArrayList<>();
       for (XAttrCompactProto xAttrCompactProto : proto.getXAttrsList()) {
         int v = xAttrCompactProto.getName();
+        int nid = (v >> XATTR_NAME_OFFSET) & XATTR_NAME_MASK;
+        int ns = (v >> XATTR_NAMESPACE_OFFSET) & XATTR_NAMESPACE_MASK;
+        ns |=
+            ((v >> XATTR_NAMESPACE_EXT_OFFSET) & XATTR_NAMESPACE_EXT_MASK) << 2;
+        String name = stringTable[nid];
         byte[] value = null;
         if (xAttrCompactProto.getValue() != null) {
           value = xAttrCompactProto.getValue().toByteArray();
         }
-        b.add(XAttrFormat.toXAttr(v, value, stringTable));
+        b.add(new XAttr.Builder().setNameSpace(XATTR_NAMESPACE_VALUES[ns])
+            .setName(name).setValue(value).build());
       }
       
       return b;
@@ -406,30 +439,46 @@ public final class FSImageFormatPBINode {
     }
   }
 
-  // the saver can directly write out fields referencing serial numbers.
-  // the serial number maps will be compacted when loading.
   public final static class Saver {
     private long numImageErrors;
 
-    private static long buildPermissionStatus(INodeAttributes n) {
-      return n.getPermissionLong();
+    private static long buildPermissionStatus(INodeAttributes n,
+        final SaverContext.DeduplicationMap<String> stringMap) {
+      long userId = stringMap.getId(n.getUserName());
+      long groupId = stringMap.getId(n.getGroupName());
+      return ((userId & USER_GROUP_STRID_MASK) << USER_STRID_OFFSET)
+          | ((groupId & USER_GROUP_STRID_MASK) << GROUP_STRID_OFFSET)
+          | n.getFsPermissionShort();
     }
 
-    private static AclFeatureProto.Builder buildAclEntries(AclFeature f) {
+    private static AclFeatureProto.Builder buildAclEntries(AclFeature f,
+        final SaverContext.DeduplicationMap<String> map) {
       AclFeatureProto.Builder b = AclFeatureProto.newBuilder();
       for (int pos = 0, e; pos < f.getEntriesSize(); pos++) {
         e = f.getEntryAt(pos);
-        b.addEntries(e);
+        int nameId = map.getId(AclEntryStatusFormat.getName(e));
+        int v = ((nameId & ACL_ENTRY_NAME_MASK) << ACL_ENTRY_NAME_OFFSET)
+            | (AclEntryStatusFormat.getType(e).ordinal() << ACL_ENTRY_TYPE_OFFSET)
+            | (AclEntryStatusFormat.getScope(e).ordinal() << ACL_ENTRY_SCOPE_OFFSET)
+            | (AclEntryStatusFormat.getPermission(e).ordinal());
+        b.addEntries(v);
       }
       return b;
     }
-
-    private static XAttrFeatureProto.Builder buildXAttrs(XAttrFeature f) {
+    
+    private static XAttrFeatureProto.Builder buildXAttrs(XAttrFeature f,
+        final SaverContext.DeduplicationMap<String> stringMap) {
       XAttrFeatureProto.Builder b = XAttrFeatureProto.newBuilder();
       for (XAttr a : f.getXAttrs()) {
         XAttrCompactProto.Builder xAttrCompactBuilder = XAttrCompactProto.
             newBuilder();
-        int v = XAttrFormat.toInt(a);
+        int nsOrd = a.getNameSpace().ordinal();
+        Preconditions.checkArgument(nsOrd < 8, "Too many namespaces.");
+        int v = ((nsOrd & XATTR_NAMESPACE_MASK) << XATTR_NAMESPACE_OFFSET)
+            | ((stringMap.getId(a.getName()) & XATTR_NAME_MASK) <<
+                XATTR_NAME_OFFSET);
+        v |= (((nsOrd >> 2) & XATTR_NAMESPACE_EXT_MASK) <<
+            XATTR_NAMESPACE_EXT_OFFSET);
         xAttrCompactBuilder.setName(v);
         if (a.getValue() != null) {
           xAttrCompactBuilder.setValue(PBHelperClient.getByteString(a.getValue()));
@@ -461,7 +510,7 @@ public final class FSImageFormatPBINode {
       INodeSection.INodeFile.Builder b = INodeSection.INodeFile.newBuilder()
           .setAccessTime(file.getAccessTime())
           .setModificationTime(file.getModificationTime())
-          .setPermission(buildPermissionStatus(file))
+          .setPermission(buildPermissionStatus(file, state.getStringMap()))
           .setPreferredBlockSize(file.getPreferredBlockSize())
           .setStoragePolicyID(file.getLocalStoragePolicyID())
           .setBlockType(PBHelperClient.convert(file.getBlockType()));
@@ -474,11 +523,11 @@ public final class FSImageFormatPBINode {
 
       AclFeature f = file.getAclFeature();
       if (f != null) {
-        b.setAcl(buildAclEntries(f));
+        b.setAcl(buildAclEntries(f, state.getStringMap()));
       }
       XAttrFeature xAttrFeature = file.getXAttrFeature();
       if (xAttrFeature != null) {
-        b.setXAttrs(buildXAttrs(xAttrFeature));
+        b.setXAttrs(buildXAttrs(xAttrFeature, state.getStringMap()));
       }
       return b;
     }
@@ -490,7 +539,7 @@ public final class FSImageFormatPBINode {
           .newBuilder().setModificationTime(dir.getModificationTime())
           .setNsQuota(quota.getNameSpace())
           .setDsQuota(quota.getStorageSpace())
-          .setPermission(buildPermissionStatus(dir));
+          .setPermission(buildPermissionStatus(dir, state.getStringMap()));
 
       if (quota.getTypeSpaces().anyGreaterOrEqual(0)) {
         b.setTypeQuotas(buildQuotaByStorageTypeEntries(quota));
@@ -498,11 +547,11 @@ public final class FSImageFormatPBINode {
 
       AclFeature f = dir.getAclFeature();
       if (f != null) {
-        b.setAcl(buildAclEntries(f));
+        b.setAcl(buildAclEntries(f, state.getStringMap()));
       }
       XAttrFeature xAttrFeature = dir.getXAttrFeature();
       if (xAttrFeature != null) {
-        b.setXAttrs(buildXAttrs(xAttrFeature));
+        b.setXAttrs(buildXAttrs(xAttrFeature, state.getStringMap()));
       }
       return b;
     }
@@ -662,7 +711,7 @@ public final class FSImageFormatPBINode {
     private void save(OutputStream out, INodeSymlink n) throws IOException {
       INodeSection.INodeSymlink.Builder b = INodeSection.INodeSymlink
           .newBuilder()
-          .setPermission(buildPermissionStatus(n))
+          .setPermission(buildPermissionStatus(n, state.getStringMap()))
           .setTarget(ByteString.copyFrom(n.getSymlink()))
           .setModificationTime(n.getModificationTime())
           .setAccessTime(n.getAccessTime());

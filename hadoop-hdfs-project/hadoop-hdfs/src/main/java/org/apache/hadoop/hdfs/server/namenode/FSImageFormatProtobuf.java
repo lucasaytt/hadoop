@@ -85,10 +85,10 @@ public final class FSImageFormatProtobuf {
       .getLogger(FSImageFormatProtobuf.class);
 
   public static final class LoaderContext {
-    private SerialNumberManager.StringTable stringTable;
+    private String[] stringTable;
     private final ArrayList<INodeReference> refList = Lists.newArrayList();
 
-    public SerialNumberManager.StringTable getStringTable() {
+    public String[] getStringTable() {
       return stringTable;
     }
 
@@ -128,6 +128,13 @@ public final class FSImageFormatProtobuf {
       }
     }
     private final ArrayList<INodeReference> refList = Lists.newArrayList();
+
+    private final DeduplicationMap<String> stringMap = DeduplicationMap
+        .newMap();
+
+    public DeduplicationMap<String> getStringMap() {
+      return stringMap;
+    }
 
     public ArrayList<INodeReference> getRefList() {
       return refList;
@@ -383,12 +390,11 @@ public final class FSImageFormatProtobuf {
 
     private void loadStringTableSection(InputStream in) throws IOException {
       StringTableSection s = StringTableSection.parseDelimitedFrom(in);
-      ctx.stringTable =
-          SerialNumberManager.newStringTable(s.getNumEntry(), s.getMaskBits());
+      ctx.stringTable = new String[s.getNumEntry() + 1];
       for (int i = 0; i < s.getNumEntry(); ++i) {
         StringTableSection.Entry e = StringTableSection.Entry
             .parseDelimitedFrom(in);
-        ctx.stringTable.put(e.getId(), e.getStr());
+        ctx.stringTable[e.getId()] = e.getStr();
       }
     }
 
@@ -715,16 +721,12 @@ public final class FSImageFormatProtobuf {
     private void saveStringTableSection(FileSummary.Builder summary)
         throws IOException {
       OutputStream out = sectionOutputStream;
-
-      SerialNumberManager.StringTable stringTable =
-          SerialNumberManager.getStringTable();
       StringTableSection.Builder b = StringTableSection.newBuilder()
-          .setNumEntry(stringTable.size())
-          .setMaskBits(stringTable.getMaskBits());
+          .setNumEntry(saverContext.stringMap.size());
       b.build().writeDelimitedTo(out);
-      for (Entry<Integer, String> e : stringTable) {
+      for (Entry<String, Integer> e : saverContext.stringMap.entrySet()) {
         StringTableSection.Entry.Builder eb = StringTableSection.Entry
-            .newBuilder().setId(e.getKey()).setStr(e.getValue());
+            .newBuilder().setId(e.getValue()).setStr(e.getKey());
         eb.build().writeDelimitedTo(out);
       }
       commitSection(summary, SectionName.STRING_TABLE);
