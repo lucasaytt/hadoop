@@ -709,6 +709,7 @@ public final class FSImageFormatPBINode {
     }
 
     private void save(OutputStream out, INodeSymlink n) throws IOException {
+      SaverContext state = parent.getSaverContext();
       INodeSection.INodeSymlink.Builder b = INodeSection.INodeSymlink
           .newBuilder()
           .setPermission(buildPermissionStatus(n, state.getStringMap()))
