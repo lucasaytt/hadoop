@@ -26,9 +26,9 @@ import java.io.Serializable;
 public class LongBitFormat implements Serializable {
   private static final long serialVersionUID = 1L;
 
-  public interface Enum {
-    int getLength();
-  }
+//  public interface Enum {
+//    int getLength();
+//  }
 
   private final String NAME;
   /** Bit offset */
@@ -74,7 +74,7 @@ public class LongBitFormat implements Serializable {
     return MIN;
   }
 
-  public int getLength() {
-    return LENGTH;
-  }
+//  public int getLength() {
+//    return LENGTH;
+//  }
 }

@@ -57,8 +57,13 @@ public class TestCommitBlockSynchronization {
     // set file's parent as root and put the file to inodeMap, so
     // FSNamesystem's isFileDeleted() method will return false on this file
     if (file.getParent() == null) {
-      INodeDirectory parent = namesystem.getFSDirectory().getRoot();
+      INodeDirectory mparent = mock(INodeDirectory.class);
+      INodeDirectory parent = new INodeDirectory(mparent.getId(), new byte[0],
+       mparent.getPermissionStatus(), mparent.getAccessTime());
+      parent.setLocalName(new byte[0]);
+      //INodeDirectory parent = namesystem.getFSDirectory().getRoot();
       parent.addChild(file);
+      file.setParent(parent);
     }
     namesystem.dir.getINodeMap().put(file);
 
